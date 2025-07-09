@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>颱風風力預警 - 可切換模式 (固定欄寬)</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f4f4f4;
+        }
+        table {
+            width: auto; /* 總寬度由內容決定，但個別列寬是固定的 */
+            border-collapse: collapse;
+            margin: 20px auto;
+            background-color: white;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            table-layout: fixed; /* 將表格佈局改為fixed，以便精確控制列寬 */
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 5px;
+            text-align: center;
+            vertical-align: middle;
+            font-size: 0.9em;
+            white-space: nowrap; /* 防止文字換行 */
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        /* 針對縣市和鄉鎮名稱列，給予更寬的預設寬度 */
+        th:nth-child(1), td:nth-child(1) { /* 縣市列 */
+            width: 80px; /* 增加寬度 */
+        }
+        th:nth-child(2), td:nth-child(2) { /* 鄉鎮市區列 */
+            width: 100px; /* 增加寬度 */
+        }
+        /* 為時間數據列設定固定寬度 */
+        th:nth-child(n+3), td:nth-child(n+3) { /* 從第三列開始，即所有時間數據列 */
+            width: 50px; /* 設定一個統一的寬度，確保數字能顯示 */
+        }
+
+
+        th {
+            background-color: #e0f2f7; /* Light blue for header */
+            color: #333;
+        }
+        .city-row {
+            background-color: #d4edda; /* Light green for city rows */
+            font-weight: bold;
+            cursor: pointer;
+        }
+        .city-row-header-label {
+            position: sticky;
+            left: 0;
+            background-color: inherit; /* 繼承父行的背景色 */
+            z-index: 2; /* 確保在數據上方 */
+        }
+        .town-row {
+            background-color: #f8f9fa; /* Lighter gray for town rows */
+            display: none; /* Hidden by default */
+        }
+
+        /* 原始網站的顏色設定 (轉為 CSS class) */
+        .indigo { background-color: indigo; }
+        .fuchsia { background-color: fuchsia; }
+        .red { background-color: red; }
+        .orange { background-color: orange; }
+        .yellow { background-color: yellow; }
+        .aquamarine { background-color: aquamarine; }
+        .lightcyan { background-color: lightcyan; }
+        .none { background-color: white; }
+        .silver { background-color: silver; }
+
+        /* 原始網站的字體顏色判斷邏輯 (轉為 CSS class) */
+        .font-white { color: white; }
+        .font-black { color: black; }
+        .font-darkgray { color: darkgray; }
+        .font-lightgray { color: lightgray; }
+        .font-gainsboro { color: Gainsboro; }
+        .font-deepskyblue { color: deepskyblue; } /* 用於差異顯示 */
+
+        .wind-value sup {
+            font-size: 0.9em;
+            vertical-align: super;
+        }
+        .wind-value sub {
+            font-size: 0.9em;
+            vertical-align: sub;
+        }
+
+        .filter-button {
+            padding: 10px 20px;
+            font-size: 1em;
+            cursor: pointer;
+            margin-bottom: 10px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            transition: background-color 0.3s ease;
+        }
+
+        .filter-button:hover {
+            background-color: #0056b3;
+        }
+        .upload-section {
+            margin-bottom: 20px;
+        }
+        .upload-section input[type="file"] {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>颱風風力預警報告</h1>
+
+    <div class="upload-section">
+        <label for="json-upload">請上傳 JSON 預報檔案：</label>
+        <input type="file" id="json-upload" accept=".json">
+    </div>
+
+    <button id="filter-toggle-btn" class="filter-button" style="display: none;">切換模式：目前顯示「排除沿海鄉鎮」</button>
+
+    <div id="windForecastTable">
+        <p>請上傳 JSON 檔案以顯示風力預報。</p>
+    </div>
+
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.7.0/jquery.min.js"></script>
+    <script>
+        let jsonData; // 聲明 jsonData 變數，儲存原始解析的 JSON
+        let activeData; // 聲明 activeData 變數，指向實際包含 speed/gust/times 的數據層
+        let allTownsMode = false; // 初始為排除模式 (false = 排除，true = 全部)
+
+        // 從 CSV 載入的需要排除的特殊鄉鎮列表 (完整的106個鄉鎮)
+        const specialTownsToExclude = new Set([
+            "基隆市-中山區", "基隆市-中正區", "基隆市-安樂區", "新北市-石門區", "新北市-金山區",
+            "新北市-萬里區", "新北市-瑞芳區", "新北市-貢寮區", "新北市-三芝區", "新北市-淡水區",
+            "新北市-八里區", "新北市-林口區", "新北市-汐止區", "新北市-雙溪區", "新北市-深坑區",
+            "新北市-五股區", "新北市-蘆洲區", "新北市-泰山區", "新北市-三重區", "桃園市-大園區",
+            "桃園市-觀音區", "桃園市-新屋區", "桃園市-蘆竹區", "桃園市-龜山區", "新竹縣-新豐鄉",
+            "新竹縣-竹北市", "新竹縣-湖口鄉", "新竹縣-新埔鎮", "苗栗縣-竹南鎮", "苗栗縣-後龍鎮",
+            "苗栗縣-通霄鎮", "苗栗縣-苑裡鎮", "苗栗縣-西湖鄉", "苗栗縣-頭份市", "苗栗縣-造橋鄉",
+            "臺中市-大甲區", "臺中市-大安區", "臺中市-清水區", "臺中市-梧棲區", "臺中市-龍井區",
+            "臺中市-外埔區", "臺中市-沙鹿區", "臺中市-大肚區", "彰化縣-伸港鄉", "彰化縣-線西鄉",
+            "彰化縣-鹿港鎮", "彰化縣-福興鄉", "彰化縣-芳苑鄉", "彰化縣-大城鄉", "雲林縣-麥寮鄉",
+            "雲林縣-臺西鄉", "雲林縣-四湖鄉", "雲林縣-口湖鄉", "雲林縣-崙背鄉", "雲林縣-二崙鄉",
+            "雲林縣-東勢鄉", "雲林縣-褒忠鄉", "雲林縣-土庫鎮", "雲林縣-元長鄉", "雲林縣-北港鎮",
+            "雲林縣-水林鄉", "嘉義縣-東石鄉", "嘉義縣-布袋鎮", "嘉義縣-六腳鄉", "嘉義縣-朴子市",
+            "嘉義縣-義竹鄉", "嘉義縣-溪口鄉", "嘉義縣-新港鄉", "臺南市-北門區", "臺南市-將軍區",
+            "臺南市-七股區", "臺南市-安南區", "臺南市-安平區", "臺南市-南區", "臺南市-學甲區",
+            "臺南市-佳里區", "臺南市-西港區", "臺南市-永康區", "高雄市-茄萣區", "高雄市-永安區",
+            "高雄市-彌陀區", "高雄市-梓官區", "高雄市-小港區", "高雄市-林園區", "高雄市-湖內區",
+            "屏東縣-東港鎮", "屏東縣-林邊鄉", "屏東縣-佳冬鄉", "屏東縣-枋寮鄉", "屏東縣-琉球鄉",
+            "屏東縣-新埤鄉", "屏東縣-新園鄉", "屏東縣-崁頂鄉", "屏東縣-南州鄉", "恆春半島-枋山鄉",
+            "恆春半島-獅子鄉", "恆春半島-車城鄉", "恆春半島-恆春鎮", "恆春半島-牡丹鄉", "恆春半島-滿州鄉",
+            "宜蘭縣-頭城鎮", "宜蘭縣-壯圍鄉", "宜蘭縣-五結鄉", "宜蘭縣-蘇澳鎮", "宜蘭縣-南澳鄉",
+            "花蓮縣-豐濱鄉", "臺東縣-長濱鄉", "臺東縣-成功鎮", "臺東縣-東河鄉", "臺東縣-太麻里鄉",
+            "臺東縣-大武鄉", "臺東縣-達仁鄉", "臺東縣-蘭嶼鄉", "臺東縣-綠島鄉", "連江縣-東引鄉",
+            "連江縣-北竿鄉", "連江縣-南竿鄉", "連江縣-莒光鄉", "金門縣-烏坵鄉", "金門縣-金沙鎮",
+            "金門縣-金湖鎮", "金門縣-金寧鄉", "金門縣-金城鎮", "金門縣-烈嶼鄉", "澎湖縣-馬公市",
+            "澎湖縣-湖西鄉", "澎湖縣-白沙鄉", "澎湖縣-西嶼鄉", "澎湖縣-望安鄉", "澎湖縣-七美鄉"
+        ]);
+
+        // 原始網站的縣市與鄉鎮結構 (這部分數據保持不變，因為是靜態定義)
+        const cities = ["基隆市", "新北市", "桃園市", "新竹市", "新竹縣", "苗栗縣", "臺中市", "彰化縣", "南投縣", "雲林縣", "嘉義市", "嘉義縣", "臺南市", "高雄市", "屏東縣", "恆春半島", "宜蘭縣", "花蓮縣", "臺東縣", "蘭嶼綠島", "連江縣", "金門縣", "澎湖縣"];
+        const towns = {
+            "基隆市": ["中山區", "中正區", "安樂區", "仁愛區", "信義區", "七堵區", "暖暖區"],
+            "新北市": ["石門區", "金山區", "萬里區", "瑞芳區", "貢寮區", "三芝區", "淡水區", "八里區", "林口區", "汐止區", "雙溪區", "深坑區", "五股區", "蘆洲區", "泰山區", "三重區", "新莊區", "板橋區", "永和區", "中和區", "新店區", "土城區", "樹林區", "鶯歌區", "平溪區", "坪林區", "石碇區", "三峽區", "烏來區"],
+            "桃園市": ["大園區", "觀音區", "新屋區", "蘆竹區", "龜山區", "桃園區", "中壢區", "八德區", "楊梅區", "平鎮區", "龍潭區", "大溪區", "復興區"],
+            "新竹市": ["北區", "香山區", "東區"],
+            "新竹縣": ["新豐鄉", "竹北市", "湖口鄉", "新埔鎮", "關西鎮", "芎林鄉", "竹東鎮", "寶山鄉", "峨眉鄉", "北埔鄉", "橫山鄉", "五峰鄉", "尖石鄉"],
+            "苗栗縣": ["竹南鎮", "後龍鎮", "通霄鎮", "苑裡鎮", "西湖鄉", "頭份市", "造橋鄉", "苗栗市", "三灣鄉", "頭屋鄉", "公館鄉", "銅鑼鄉", "三義鄉", "南庄鄉", "獅潭鄉", "大湖鄉", "卓蘭鎮", "泰安鄉"],
+            "臺中市": ["大甲區", "大安區", "清水區", "梧棲區", "龍井區", "外埔區", "沙鹿區", "大肚區", "后里區", "神岡區", "豐原區", "大雅區", "潭子區", "西屯區", "南屯區", "烏日區", "北屯區", "北區", "西區", "中區", "南區", "東區", "大里區", "霧峰區", "太平區", "石岡區", "東勢區", "新社區", "和平區"],
+            "彰化縣": ["伸港鄉", "線西鄉", "鹿港鎮", "福興鄉", "芳苑鄉", "大城鄉", "和美鎮", "彰化市", "秀水鄉", "花壇鄉", "大村鄉", "埔鹽鄉", "溪湖鎮", "埔心鄉", "永靖鄉", "田尾鄉", "二林鎮", "竹塘鄉", "埤頭鄉", "北斗鎮", "溪州鄉", "員林市", "社頭鄉", "田中鎮", "二水鄉", "芬園鄉"],
+            "南投縣": ["草屯鎮", "南投市", "名間鄉", "中寮鄉", "集集鎮", "國姓鄉", "埔里鎮", "魚池鄉", "水里鄉", "鹿谷鄉", "竹山鎮", "仁愛鄉", "信義鄉"],
+            "雲林縣": ["麥寮鄉", "臺西鄉", "四湖鄉", "口湖鄉", "崙背鄉", "二崙鄉", "東勢鄉", "褒忠鄉", "土庫鎮", "元長鄉", "北港鎮", "水林鄉", "西螺鎮", "莿桐鄉", "虎尾鎮", "斗南鎮", "大埤鄉", "林內鄉", "斗六市", "古坑鄉"],
+            "嘉義市": ["西區", "東區"],
+            "嘉義縣": ["東石鄉", "布袋鎮", "六腳鄉", "朴子市", "義竹鄉", "溪口鄉", "新港鄉", "太保市", "鹿草鄉", "水上鄉", "大林鎮", "民雄鄉", "中埔鄉", "梅山鄉", "竹崎鄉", "番路鄉", "大埔鄉", "阿里山鄉"],
+            "臺南市": ["北門區", "將軍區", "七股區", "安南區", "安平區", "南區", "學甲區", "佳里區", "西港區", "北區", "中西區", "東區", "鹽水區", "後壁區", "新營區", "柳營區", "下營區", "六甲區", "麻豆區", "官田區", "善化區", "安定區", "新市區", "永康區", "仁德區", "大內區", "玉井區", "山上區", "新化區", "左鎮區", "歸仁區", "關廟區", "龍崎區", "白河區", "東山區", "楠西區", "南化區"],
+            "高雄市": ["茄萣區", "永安區", "彌陀區", "梓官區", "楠梓區", "左營區", "鼓山區", "旗津區", "前鎮區", "小港區", "林園區", "湖內區", "三民區", "苓雅區", "鹽埕區", "前金區", "新興區", "路竹區", "阿蓮區", "岡山區", "橋頭區", "田寮區", "燕巢區", "大社區", "仁武區", "大樹區", "鳥松區", "鳳山區", "大寮區", "內門區", "旗山區", "杉林區", "美濃區", "甲仙區", "六龜區", "茂林區", "那瑪夏區", "桃源區"],
+            "屏東縣": ["里港鄉", "九如鄉", "高樹鄉", "鹽埔鄉", "屏東市", "萬丹鄉", "長治鄉", "麟洛鄉", "內埔鄉", "竹田鄉", "萬巒鄉", "潮州鎮", "崁頂鄉", "南州鄉", "新埤鄉", "新園鄉", "東港鎮", "林邊鄉", "佳冬鄉", "枋寮鄉", "琉球鄉", "三地門鄉", "霧臺鄉", "瑪家鄉", "泰武鄉", "來義鄉", "春日鄉"],
+            "恆春半島": ["枋山鄉", "獅子鄉", "車城鄉", "恆春鎮", "牡丹鄉", "滿州鄉"],
+            "宜蘭縣": ["頭城鎮", "壯圍鄉", "五結鄉", "蘇澳鎮", "南澳鄉", "礁溪鄉", "宜蘭市", "羅東鎮", "冬山鄉", "員山鄉", "三星鄉", "大同鄉"],
+            "花蓮縣": ["新城鄉", "花蓮市", "吉安鄉", "壽豐鄉", "豐濱鄉", "秀林鄉", "鳳林鎮", "光復鄉", "瑞穗鄉", "玉里鎮", "富里鄉", "萬榮鄉", "卓溪鄉"],
+            "臺東縣": ["長濱鄉", "成功鎮", "東河鄉", "臺東市", "太麻里鄉", "大武鄉", "卑南鄉", "達仁鄉", "池上鄉", "關山鎮", "鹿野鄉", "海端鄉", "延平鄉", "金峰鄉"],
+            "蘭嶼綠島": ["蘭嶼鄉", "綠島鄉"],
+            "連江縣": ["東引鄉", "北竿鄉", "南竿鄉", "莒光鄉"],
+            "金門縣": ["烏坵鄉", "金沙鎮", "金湖鎮", "金寧鄉", "金城鎮", "烈嶼鄉"],
+            "澎湖縣": ["白沙鄉", "西嶼鄉", "湖西鄉", "馬公市", "望安鄉", "七美鄉"]
+        };
+        const specialCitiesMapping = {
+            "恆春半島": "屏東縣",
+            "蘭嶼綠島": "臺東縣",
+        };
+
+        // 原始網站的風級顏色判斷邏輯
+        function set_color(wind, gust) {
+            wind = parseInt(wind);
+            gust = parseInt(gust);
+            if (isNaN(wind) || isNaN(gust)) return "none";
+
+            if (wind >= 12 || gust >= 14 || gust === ">17") return "indigo";
+            if (wind >= 10 || gust >= 13) return "fuchsia";
+            if (wind >= 8 || gust >= 11) return "red";
+            if (wind >= 7 || gust >= 10) return "orange";
+            if (wind >= 6 || gust >= 9) return "yellow";
+            if (wind >= 5 || gust >= 7) return "aquamarine";
+            if (wind >= 4 || gust >= 6) return "lightcyan";
+            return "none";
+        }
+
+        // 原始網站的字體顏色判斷邏輯
+        function set_font_color(wind, gust, diff = 0) {
+            wind = parseInt(wind);
+            gust = parseInt(gust);
+
+            if (isNaN(wind) || isNaN(gust)) return "font-black";
+
+            if (wind >= 12 || gust >= 14 || gust === ">17") return "font-white";
+            if (wind >= 7 || gust >= 10) return "font-black";
+            if (wind >= 6 || gust >= 9) return "font-darkgray";
+            if (wind >= 5 || gust >= 8) return "font-lightgray";
+            return "font-gainsboro";
+        }
+
+        function renderTable() {
+            // 確保 activeData 已經被成功設定
+            if (!activeData || !activeData.speed || !activeData.gust || !activeData.times) {
+                console.error("activeData 未正確載入或缺少必要鍵。");
+                document.getElementById('windForecastTable').innerHTML = "<p style='color:red;'>數據格式不正確或數據尚未載入。請上傳有效的 JSON 檔案。</p>";
+                $('#filter-toggle-btn').hide(); // 隱藏按鈕
+                return;
+            }
+
+            let tableHtml = '<table><thead><tr><th rowspan="2" class="city-row-header-label">縣市</th><th rowspan="2" class="city-row-header-label">鄉鎮市區</th>';
+
+            // 生成時間軸的日期部分表頭
+            const dates = {};
+            activeData.times.forEach(timeStr => {
+                const dateObj = new Date(timeStr);
+                const month = (dateObj.getMonth() + 1).toString().padStart(2, '0');
+                const day = dateObj.getDate().toString().padStart(2, '0');
+                const dayOfWeek = dateObj.toLocaleString('zh-TW', { weekday: 'short' });
+                const displayDate = `${parseInt(day)}日(${dayOfWeek})`;
+
+                if (!dates[displayDate]) {
+                    dates[displayDate] = 0;
+                }
+                dates[displayDate]++;
+            });
+
+            for (const date in dates) {
+                tableHtml += `<th colspan="${dates[date]}">${date}</th>`;
+            }
+            tableHtml += '</tr><tr>';
+
+            // 生成時間軸的小時部分表頭
+            activeData.times.forEach(timeStr => {
+                const dateObj = new Date(timeStr);
+                const hour = dateObj.getHours().toString().padStart(2, '0');
+                tableHtml += `<th>${hour}</th>`;
+            });
+            tableHtml += '</tr></thead><tbody>';
+
+            // 生成表格內容
+            cities.forEach(county => {
+                const countyMaxSpeeds = Array(activeData.times.length).fill(0);
+                const countyMaxGusts = Array(activeData.times.length).fill(0);
+
+                const currentTownsInCounty = towns[county] || [];
+                const actualCountyForData = specialCitiesMapping[county] || county;
+
+                let hasVisibleTownsInCounty = false; // 追蹤該縣市是否有任何鄉鎮是可顯示的
+
+                currentTownsInCounty.forEach(town => {
+                    let dataKey = `${actualCountyForData}-${town}`;
+                    
+                    // 如果不是「全部鄉鎮」模式，才進行排除判斷
+                    if (!allTownsMode && (specialTownsToExclude.has(`${county}-${town}`) || specialTownsToExclude.has(`${actualCountyForData}-${town}`))) {
+                        return; // 跳過此鄉鎮
+                    }
+
+                    // 嘗試找到數據鍵
+                    if (!activeData.speed[dataKey]) {
+                        dataKey = `${county}-${town}`; // 如果找不到，嘗試使用原始 county-town
+                    }
+                    
+                    if (!activeData.speed[dataKey] || !activeData.gust[dataKey]) {
+                        // 如果該鄉鎮沒有數據，跳過
+                        return;
+                    }
+
+                    hasVisibleTownsInCounty = true; // 如果走到這裡，表示該鄉鎮可見
+
+                    const townSpeeds = activeData.speed[dataKey];
+                    const townGusts = activeData.gust[dataKey];
+
+                    townSpeeds.forEach((speed, i) => {
+                        const parsedSpeed = parseInt(speed);
+                        const parsedGust = parseInt(townGusts[i]);
+
+                        if (!isNaN(parsedSpeed) && parsedSpeed > countyMaxSpeeds[i]) {
+                            countyMaxSpeeds[i] = parsedSpeed;
+                        }
+                        if (!isNaN(parsedGust) && parsedGust > countyMaxGusts[i]) {
+                            countyMaxGusts[i] = parsedGust;
+                        }
+                    });
+                });
+
+                // 只有當該縣市下有任何可顯示的鄉鎮時，才顯示縣市總覽行
+                if (hasVisibleTownsInCounty) {
+                    tableHtml += `<tr class="city-row" data-county="${county}">`;
+                    tableHtml += `<td rowspan="1" class="city-row-header-label">${county}</td>`;
+                    tableHtml += `<td class="city-row-header-label">縣市</td>`;
+                    countyMaxSpeeds.forEach((speed, i) => {
+                        const gust = countyMaxGusts[i];
+                        const bgColorClass = set_color(speed, gust);
+                        const textColorClass = set_font_color(speed, gust);
+                        tableHtml += `<td class="${bgColorClass}"><div class="wind-value"><font class="${textColorClass}"><sup>${speed}</sup><sub>${gust}</sub></font></div></td>`;
+                    });
+                    tableHtml += '</tr>';
+                }
+
+                // 鄉鎮詳情行 (只顯示未被排除的鄉鎮)
+                currentTownsInCounty.forEach(town => {
+                    let dataKeyToDisplay = `${actualCountyForData}-${town}`;
+                    
+                    // 如果不是「全部鄉鎮」模式，才進行排除判斷
+                    if (!allTownsMode && (specialTownsToExclude.has(`${county}-${town}`) || specialTownsToExclude.has(`${actualCountyForData}-${town}`))) {
+                        return; // 跳過此鄉鎮
+                    }
+
+                    if (!activeData.speed[dataKeyToDisplay]) {
+                        dataKeyToDisplay = `${county}-${town}`;
+                    }
+
+                    const townSpeeds = activeData.speed[dataKeyToDisplay];
+                    const townGusts = activeData.gust[dataKeyToDisplay];
+
+                    if (townSpeeds && townGusts) { // 再次檢查確保數據存在
+                        tableHtml += `<tr class="town-row town-${county}">`;
+                        tableHtml += `<td class="city-row-header-label"></td><td class="city-row-header-label">${town}</td>`;
+                        townSpeeds.forEach((speed, i) => {
+                            const gust = townGusts[i];
+                            const bgColorClass = set_color(speed, gust);
+                            const textColorClass = set_font_color(speed, gust);
+                            tableHtml += `<td class="${bgColorClass}"><div class="wind-value"><font class="${textColorClass}"><sup>${speed}</sup><sub>${gust}</sub></font></div></td>`;
+                        });
+                        tableHtml += '</tr>';
+                    }
+                });
+            });
+
+            tableHtml += '</tbody></table>';
+            $('#windForecastTable').html(tableHtml);
+            $('#filter-toggle-btn').show(); // 顯示切換模式按鈕
+
+            // 確保每次重新渲染表格後，再次為城市行綁定點擊事件
+            $('.city-row').off('click').on('click', function() {
+                const countyName = $(this).data('county');
+                $(`.town-${countyName}`).toggle();
+            });
+
+            // 展開所有縣市下的鄉鎮資訊（如果您希望在切換模式時所有鄉鎮都默認展開）
+            // $('.town-row').show(); // 如果需要每次切換都展開，請取消註釋此行
+        }
+
+        // 按鈕切換邏輯
+        $('#filter-toggle-btn').on('click', function() {
+            allTownsMode = !allTownsMode; // 切換模式
+            if (allTownsMode) {
+                $(this).text('切換模式：目前顯示「全部檔案」');
+            } else {
+                $(this).text('切換模式：目前顯示「排除沿海鄉鎮」');
+            }
+            renderTable(); // 重新渲染表格
+        });
+
+        // 監聽檔案上傳事件
+        $('#json-upload').on('change', function(event) {
+            const file = event.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    try {
+                        jsonData = JSON.parse(e.target.result);
+                        
+                        // 偵測 JSON 檔案結構
+                        if (jsonData && jsonData.data && typeof jsonData.data === 'object' &&
+                            jsonData.data.speed && jsonData.data.gust && jsonData.data.times) {
+                            activeData = jsonData.data; // 新格式：數據在 data 物件下
+                            console.log("偵測到新 JSON 格式 (數據在 'data' 物件下)。");
+                        } else if (jsonData && jsonData.speed && jsonData.gust && jsonData.times) {
+                            activeData = jsonData; // 原始格式：數據直接在根目錄
+                            console.log("偵測到原始 JSON 格式 (數據在根目錄)。");
+                        } else {
+                            throw new Error("不支援的 JSON 格式或缺少必要的鍵 (speed, gust, times)。");
+                        }
+
+                        renderTable(); // 數據載入成功並偵測格式後才渲染表格
+                    } catch (error) {
+                        console.error("解析 JSON 數據時發生錯誤:", error);
+                        alert("檔案解析失敗，請確認上傳的檔案是有效的 JSON 格式，且包含 speed, gust, times 鍵。詳情請查看控制台。");
+                        document.getElementById('windForecastTable').innerHTML = "<p style='color:red;'>無法解析風力預報數據。請檢查檔案格式。</p>";
+                        $('#filter-toggle-btn').hide(); // 隱藏按鈕
+                    }
+                };
+                reader.onerror = function(e) {
+                    console.error("讀取檔案時發生錯誤:", e);
+                    alert("讀取檔案時發生錯誤。");
+                    document.getElementById('windForecastTable').innerHTML = "<p style='color:red;'>讀取檔案失敗。</p>";
+                    $('#filter-toggle-btn').hide(); // 隱藏按鈕
+                };
+                reader.readAsText(file);
+            } else {
+                jsonData = null;
+                activeData = null; // 清除 activeData
+                document.getElementById('windForecastTable').innerHTML = "<p>請上傳 JSON 檔案以顯示風力預報。</p>";
+                $('#filter-toggle-btn').hide(); // 隱藏按鈕
+            }
+        });
+
+        // 頁面載入時初始化，讓用戶上傳檔案
+        $(document).ready(function() {
+            $('#filter-toggle-btn').hide(); // 初始時隱藏按鈕
+        });
+    </script>
+</body>
+</html>
